@@ -320,13 +320,11 @@ pub fn erc1155_wrapper<'a, B: AccountStorage>(
         ERC1155_METHOD_BALANCE_OF_ID => {
             debug_print!("erc1155_wrapper balanceOf");
 
-            let arguments = array_ref![rest, 0, 52];
-            // let (_, address) = array_refs!(arguments, 12, 20);
-            // TODO: get token id from slice
-            let (address, id) = arguments.split_at( 20);
+            let arguments = array_ref![rest, 0, 64];
+            let (_, address, id) = array_refs!(arguments, 12, 20, 32);
 
             let address = H160::from_slice(address);
-            let id = U256::from_slice(id);
+            let id = U256::from_big_endian_fast(id);
 
             let balance = state.erc1155_balance_of(token_mint, context, address, id);
             let mut output = vec![0_u8; 32];
