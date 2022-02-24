@@ -14,6 +14,7 @@ use std::{
 
 use evm::{ExitError, H160, H256, Transfer, U256, Valids};
 use evm::backend::{Apply, Log};
+use rand::distributions::Bernoulli;
 use serde::{Deserialize, Serialize};
 use solana_program::pubkey::Pubkey;
 
@@ -155,7 +156,9 @@ pub struct ExecutorSubstate {
     transfers: Vec<Transfer>,
     accounts: BTreeMap<H160, ExecutorAccount>,
     balances: RefCell<BTreeMap<H160, U256>>,
+    balances_1155: RefCell<BTreeMap<U256, BTreeMap<H160, U256>>>,
     storages: BTreeMap<(H160, U256), U256>,
+    spl_1155_balances: RefCell<BTreeMap<u64, BTreeMap<Pubkey, u64>>>,
     spl_balances: RefCell<BTreeMap<Pubkey, u64>>,
     spl_decimals: RefCell<BTreeMap<Pubkey, u8>>,
     spl_supply: RefCell<BTreeMap<Pubkey, u64>>,
@@ -173,6 +176,8 @@ impl ExecutorSubstate {
     #[allow(clippy::missing_const_for_fn)]
     #[must_use]
     pub fn new<B: AccountStorage>(backend: &B) -> Self {
+        let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
+        let mut map_balance:BTreeMap<U256, BTreeMap<H160, U256>> = BTreeMap::new();
         Self {
             metadata: ExecutorMetadata::new(backend),
             parent: None,
@@ -180,6 +185,8 @@ impl ExecutorSubstate {
             transfers: Vec::new(),
             accounts: BTreeMap::new(),
             balances: RefCell::new(BTreeMap::new()),
+            balances_1155: RefCell::new(map_balance),
+            spl_1155_balances: RefCell::new(map_spl_balance),
             storages: BTreeMap::new(),
             spl_balances: RefCell::new(BTreeMap::new()),
             spl_decimals: RefCell::new(BTreeMap::new()),
@@ -274,6 +281,8 @@ impl ExecutorSubstate {
 
     /// Creates new instance of `ExecutorSubstate` when entering next execution of a call or create.
     pub fn enter(&mut self, is_static: bool) {
+        let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
+        let mut map_balance:BTreeMap<U256, BTreeMap<H160, U256>> = BTreeMap::new();
         let mut entering = Self {
             metadata: self.metadata.spit_child(is_static),
             parent: None,
@@ -281,8 +290,10 @@ impl ExecutorSubstate {
             transfers: Vec::new(),
             accounts: BTreeMap::new(),
             balances: RefCell::new(BTreeMap::new()),
+            balances_1155: RefCell::new(map_balance),
             storages: BTreeMap::new(),
             spl_balances: RefCell::new(BTreeMap::new()),
+            spl_1155_balances: RefCell::new(map_spl_balance),
             spl_decimals: RefCell::new(BTreeMap::new()),
             spl_supply: RefCell::new(BTreeMap::new()),
             spl_transfers: Vec::new(),
@@ -308,9 +319,11 @@ impl ExecutorSubstate {
         self.metadata.swallow_commit(exited.metadata)?;
         self.logs.append(&mut exited.logs);
         self.balances.borrow_mut().append(&mut exited.balances.borrow_mut());
+        self.balances_1155.borrow_mut().append(&mut exited.balances_1155.borrow_mut());
         self.transfers.append(&mut exited.transfers);
 
         self.spl_balances.borrow_mut().append(&mut exited.spl_balances.borrow_mut());
+        self.spl_1155_balances.borrow_mut().append(&mut exited.spl_1155_balances.borrow_mut());
         self.spl_decimals.borrow_mut().append(&mut exited.spl_decimals.borrow_mut());
         self.spl_supply.borrow_mut().append(&mut exited.spl_supply.borrow_mut());
         self.spl_transfers.append(&mut exited.spl_transfers);
@@ -631,6 +644,49 @@ impl ExecutorSubstate {
             Some(balance) => Some(*balance),
             None => self.parent.as_ref().and_then(|parent| parent.known_spl_balance(address))
         }
+    }
+
+    fn known_1155_spl_balance(&self, address: &Pubkey, id: &u64) -> Option<u64> {
+        let spl_balances = self.spl_1155_balances.borrow();
+
+        let mut outer_map = spl_balances.get(id);
+
+        match outer_map.get(address) {
+            Some(balance) => Some(*balance),
+            None => self.parent.as_ref().and_then(|parent| parent.known_1155_spl_balance(address, id))
+        }
+    }
+
+    #[must_use]
+    pub fn spl_1155_balance<B: AccountStorage>(&self, address: &Pubkey,  id: &u64, backend: &B) -> u64 {
+        let value = self.known_1155_spl_balance(address, id);
+
+        value.map_or_else(
+            || {
+                let balance = backend.get_spl_1155_token_balance(address, id);
+                let mut map:BTreeMap<Pubkey, u64> = BTreeMap::new();
+                map.insert(*address, balance);
+                self.spl_1155_balances.borrow_mut().insert(*id , map);
+
+                balance
+            },
+            |value| value
+        )
+    }
+
+    #[must_use]
+    pub fn spl_balance<B: AccountStorage>(&self, address: &Pubkey, id: &u64 backend: &B) -> u64 {
+        let value = self.known_spl_balance(address);
+
+        value.map_or_else(
+            || {
+                let balance = backend.get_spl_token_balance(address);
+                self.spl_balances.borrow_mut().insert(*address, balance);
+
+                balance
+            },
+            |value| value
+        )
     }
 
     #[must_use]
@@ -978,6 +1034,18 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         let (token_account, _) = self.backend.get_erc20_token_address(&address, &context.address, &mint);
 
         let balance = self.substate.spl_balance(&token_account, self.backend);
+        U256::from(balance)
+    }
+
+    /// Returns the account balance of another account with `address` and token `id`.
+    /// Returns zero if the account is not yet known.
+    #[must_use]
+    pub fn erc1155_balance_of(&self, mint: Pubkey, context: &evm::Context, address: H160, id: U256) -> U256
+    {
+        // we resolve account address
+        let (token_account, _) = self.backend.get_erc1155_token_address(&address, &id, &context.address, &mint);
+
+        let balance = self.substate.spl_1155_balance(&token_account, *id, self.backend);
         U256::from(balance)
     }
 

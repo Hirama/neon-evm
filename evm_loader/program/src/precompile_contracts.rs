@@ -16,6 +16,7 @@ use crate::{
 };
 
 const SYSTEM_ACCOUNT_ERC20_WRAPPER: H160 =     H160([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01]);
+const SYSTEM_ACCOUNT_ERC1155_WRAPPER: H160 =   H160([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04]);
 const SYSTEM_ACCOUNT_QUERY: H160 =             H160([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
 const SYSTEM_ACCOUNT_ECRECOVER: H160 =         H160([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01]);
 const SYSTEM_ACCOUNT_SHA_256: H160 =           H160([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02]);
@@ -32,6 +33,7 @@ const SYSTEM_ACCOUNT_BLAKE2F: H160 =           H160([0, 0, 0, 0, 0, 0, 0, 0, 0, 
 #[must_use]
 pub fn is_precompile_address(address: &H160) -> bool {
            *address == SYSTEM_ACCOUNT_ERC20_WRAPPER
+        || *address == SYSTEM_ACCOUNT_ERC1155_WRAPPER
         || *address == SYSTEM_ACCOUNT_QUERY
         || *address == SYSTEM_ACCOUNT_ECRECOVER
         || *address == SYSTEM_ACCOUNT_SHA_256
@@ -56,6 +58,9 @@ pub fn call_precompile<'a, B: AccountStorage>(
 ) -> Option<PrecompileResult> {
     if address == SYSTEM_ACCOUNT_ERC20_WRAPPER {
         return Some(erc20_wrapper(input, context, state));
+    }
+    if address == SYSTEM_ACCOUNT_ERC1155_WRAPPER {
+        return Some(erc1155_wrapper(input, context, state));
     }
     if address == SYSTEM_ACCOUNT_QUERY {
         return Some(query_account(input, state));
@@ -275,6 +280,110 @@ pub fn erc20_wrapper<'a, B: AccountStorage>(
         },
         _ => {
             debug_print!("erc20_wrapper UNKNOWN");
+            Capture::Exit((ExitReason::Fatal(evm::ExitFatal::NotSupported), vec![]))
+        }
+    }
+}
+
+// TODO: check u256 to u64
+
+// ERC1155 method ids:
+//--------------------------------------------------
+// balanceOf(address,uint256)                                     => 00fdd58e
+// safeTransferFrom(address,address,uint256,bytes)                => b88d4fde
+// approveSolana(bytes32,uint64)                                  => 93e29346
+//--------------------------------------------------
+
+const ERC1155_METHOD_BALANCE_OF_ID: &[u8; 4] = &[0xd3, 0x30, 0xb5, 0x78];
+const ERC1155_METHOD_SAFE_TRANSFER_FROM_ID: &[u8; 4] = &[0xa2, 0x07, 0x71, 0x42];
+const ERC1155_METHOD_APPROVE_SOLANA_ID: &[u8; 4] = &[0x93, 0xe2, 0x93, 0x46];
+
+/// Call inner `erc1155_wrapper`
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn erc1155_wrapper<'a, B: AccountStorage>(
+    input: &[u8],
+    context: &evm::Context,
+    state: &mut ExecutorState<'a, B>,
+)
+    -> Capture<(ExitReason, Vec<u8>), Infallible>
+{
+    debug_print!("erc1155_wrapper({})", hex::encode(&input));
+
+    let (token_mint, rest) = input.split_at(32);
+    let token_mint = Pubkey::new(token_mint);
+
+    let (method_id, rest) = rest.split_at(4);
+    let method_id: &[u8; 4] = method_id.try_into().unwrap_or(&[0_u8; 4]);
+
+    match method_id {
+        ERC1155_METHOD_BALANCE_OF_ID => {
+            debug_print!("erc1155_wrapper balanceOf");
+
+            let arguments = array_ref![rest, 0, 52];
+            // let (_, address) = array_refs!(arguments, 12, 20);
+            // TODO: get token id from slice
+            let (address, id) = arguments.split_at( 20);
+
+            let address = H160::from_slice(address);
+            let id = U256::from_slice(id);
+
+            let balance = state.erc1155_balance_of(token_mint, context, address, id);
+            let mut output = vec![0_u8; 32];
+            balance.into_big_endian_fast(&mut output);
+
+            debug_print!("erc1155_wrapper balanceOf result {:?}", output);
+
+            Capture::Exit((ExitReason::Succeed(evm::ExitSucceed::Returned), output))
+        }
+        ERC1155_METHOD_SAFE_TRANSFER_FROM_ID => {
+            debug_print!("erc1155_wrapper transfer");
+
+            if state.metadata().is_static() {
+                let revert_message = b"ERC1155 transfer is not allowed in static context".to_vec();
+                return Capture::Exit((ExitReason::Revert(evm::ExitRevert::Reverted), revert_message));
+            }
+
+            let arguments = array_ref![rest, 0, 64];
+            let (_, address, value) = array_refs!(arguments, 12, 20, 32);
+
+            let address = H160::from_slice(address);
+            let value = U256::from_big_endian_fast(value);
+
+            let status = state.erc20_transfer(token_mint, context, address, value);
+            if !status {
+                let revert_message = b"ERC1155 transfer failed".to_vec();
+                return Capture::Exit((ExitReason::Revert(evm::ExitRevert::Reverted), revert_message));
+            }
+
+            let mut output = vec![0_u8; 32];
+            output[31] = 1; // return true
+
+            Capture::Exit((ExitReason::Succeed(evm::ExitSucceed::Returned), output))
+        }
+        ERC20_METHOD_APPROVE_SOLANA_ID => {
+            debug_print!("erc1155_wrapper approve solana");
+
+            if state.metadata().is_static() {
+                let revert_message = b"ERC1155 approveSolana is not allowed in static context".to_vec();
+                return Capture::Exit((ExitReason::Revert(evm::ExitRevert::Reverted), revert_message));
+            }
+
+            let arguments = array_ref![rest, 0, 64];
+            let (spender, _, value) = array_refs!(arguments, 32, 24, 8);
+
+            let spender = Pubkey::new_from_array(*spender);
+            let value = u64::from_be_bytes(*value);
+
+            state.erc20_approve_solana(token_mint, context, spender, value);
+
+            let mut output = vec![0_u8; 32];
+            output[31] = 1; // return true
+
+            Capture::Exit((ExitReason::Succeed(evm::ExitSucceed::Returned), output))
+        }
+        _ => {
+            debug_print!("erc1155_wrapper UNKNOWN");
             Capture::Exit((ExitReason::Fatal(evm::ExitFatal::NotSupported), vec![]))
         }
     }

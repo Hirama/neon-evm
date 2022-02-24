@@ -18,6 +18,7 @@ use std::{cell::RefCell, rc::Rc};
 pub struct AccountStorageInfo<'a> {
     /// The lamports in account
     pub lamports: u64,
+    // TODO: what is it?
     /// The data held in account
     pub data: Rc<RefCell<&'a mut [u8]>>,
     /// Program that owns account
@@ -83,6 +84,15 @@ pub trait AccountStorage {
         )
     }
 
+    /// Get SPL token balance
+    fn get_spl_1155_token_balance(&self, token_account: &Pubkey, id: &u64) -> u64 {
+        self.apply_to_solana_account(
+            token_account,
+            || 0_u64,
+            |info| get_token_account_data(&info.data.borrow(), info.owner).map_or(0, |a| a.amount)
+        )
+    }
+
     /// Get SPL token supply
     fn get_spl_token_supply(&self, token_mint: &Pubkey) -> u64 {
         self.apply_to_solana_account(
@@ -104,6 +114,12 @@ pub trait AccountStorage {
     /// Get ERC20 token account address and bump seed
     fn get_erc20_token_address(&self, owner: &H160, contract: &H160, mint: &Pubkey) -> (Pubkey, u8) {
         let seeds: &[&[u8]] = &[&[ACCOUNT_SEED_VERSION], b"ERC20Balance", &mint.to_bytes(), contract.as_bytes(), owner.as_bytes()];
+        Pubkey::find_program_address(seeds, self.program_id())
+    }
+
+    /// Get ERC1155 token account address and bump seed
+    fn get_erc1155_token_address(&self, owner: &H160, id: &U256, contract: &H160, mint: &Pubkey) -> (Pubkey, u8) {
+        let seeds: &[&[u8]] = &[&[ACCOUNT_SEED_VERSION], b"ERC1155Balance", &mint.to_bytes(), contract.as_bytes(), owner.as_bytes(), id.as_bytes()];
         Pubkey::find_program_address(seeds, self.program_id())
     }
 
