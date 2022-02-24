@@ -1049,6 +1049,14 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         U256::from(balance)
     }
 
+    #[must_use]
+    pub fn erc1155_transfer(&self, mint: Pubkey, context: &evm::Context, from: H160, to: H160, id: U256, amount: U256) {
+        // TODO: do
+        // event Transfer ...
+
+        
+    }
+
     fn erc20_emit_transfer_event(&mut self, contract: H160, source: H160, target: H160, value: u64) {
         // event Transfer(address indexed from, address indexed to, uint256 value);
 
