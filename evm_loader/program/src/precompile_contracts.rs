@@ -342,16 +342,16 @@ pub fn erc1155_wrapper<'a, B: AccountStorage>(
                 return Capture::Exit((ExitReason::Revert(evm::ExitRevert::Reverted), revert_message));
             }
 
+            // TODO: double check argument parsing
             let arguments = array_ref![rest, 0, 64];
             let (_, from, to, id, value ) = array_refs!(arguments, 12, 20, 32, 44);
 
-            let from = H160::from_slice(from);
             let to = H160::from_slice(to);
             let id = U256::from_big_endian_fast(id);
             let value = U256::from_big_endian_fast(value);
 
 
-            let status = state.erc1155_transfer(token_mint, context, to, value);
+            let status = state.erc1155_transfer(token_mint, context, to, value, id);
             if !status {
                 let revert_message = b"ERC1155 transfer failed".to_vec();
                 return Capture::Exit((ExitReason::Revert(evm::ExitRevert::Reverted), revert_message));

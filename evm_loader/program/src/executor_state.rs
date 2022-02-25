@@ -126,7 +126,8 @@ pub struct SplTransfer {
     pub mint: Pubkey,
     pub source_token: Pubkey,
     pub target_token: Pubkey,
-    pub value: u64
+    pub value: u64,
+    pub token_id: u64
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -156,7 +157,6 @@ pub struct ExecutorSubstate {
     transfers: Vec<Transfer>,
     accounts: BTreeMap<H160, ExecutorAccount>,
     balances: RefCell<BTreeMap<H160, U256>>,
-    balances_1155: RefCell<BTreeMap<U256, BTreeMap<H160, U256>>>,
     storages: BTreeMap<(H160, U256), U256>,
     spl_1155_balances: RefCell<BTreeMap<u64, BTreeMap<Pubkey, u64>>>,
     spl_balances: RefCell<BTreeMap<Pubkey, u64>>,
@@ -177,7 +177,6 @@ impl ExecutorSubstate {
     #[must_use]
     pub fn new<B: AccountStorage>(backend: &B) -> Self {
         let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
-        let mut map_balance:BTreeMap<U256, BTreeMap<H160, U256>> = BTreeMap::new();
         Self {
             metadata: ExecutorMetadata::new(backend),
             parent: None,
@@ -185,7 +184,6 @@ impl ExecutorSubstate {
             transfers: Vec::new(),
             accounts: BTreeMap::new(),
             balances: RefCell::new(BTreeMap::new()),
-            balances_1155: RefCell::new(map_balance),
             spl_1155_balances: RefCell::new(map_spl_balance),
             storages: BTreeMap::new(),
             spl_balances: RefCell::new(BTreeMap::new()),
@@ -282,7 +280,6 @@ impl ExecutorSubstate {
     /// Creates new instance of `ExecutorSubstate` when entering next execution of a call or create.
     pub fn enter(&mut self, is_static: bool) {
         let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
-        let mut map_balance:BTreeMap<U256, BTreeMap<H160, U256>> = BTreeMap::new();
         let mut entering = Self {
             metadata: self.metadata.spit_child(is_static),
             parent: None,
@@ -290,7 +287,6 @@ impl ExecutorSubstate {
             transfers: Vec::new(),
             accounts: BTreeMap::new(),
             balances: RefCell::new(BTreeMap::new()),
-            balances_1155: RefCell::new(map_balance),
             storages: BTreeMap::new(),
             spl_balances: RefCell::new(BTreeMap::new()),
             spl_1155_balances: RefCell::new(map_spl_balance),
@@ -736,7 +732,7 @@ impl ExecutorSubstate {
     }
 
     #[must_use]
-    pub fn spl_balance<B: AccountStorage>(&self, address: &Pubkey, id: &u64 backend: &B) -> u64 {
+    pub fn spl_balance<B: AccountStorage>(&self, address: &Pubkey, backend: &B) -> u64 {
         let value = self.known_spl_balance(address);
 
         value.map_or_else(
@@ -750,19 +746,31 @@ impl ExecutorSubstate {
         )
     }
 
-    #[must_use]
-    pub fn spl_balance<B: AccountStorage>(&self, address: &Pubkey, backend: &B) -> u64 {
-        let value = self.known_spl_balance(address);
+    fn spl_1155_transfer<B: AccountStorage>(&mut self, transfer: SplTransfer, backend: &B) -> Result<(), ExitError> {
+        debug_print!("spl_transfer: {:?}", transfer);
 
-        value.map_or_else(
-            || {
-                let balance = backend.get_spl_token_balance(address);
-                self.spl_balances.borrow_mut().insert(*address, balance);
+        let new_source_balance = {
+            let balance = self.spl_1155_balance(&transfer.source_token, &transfer.token_id, backend);
+            balance.checked_sub(transfer.value).ok_or(ExitError::OutOfFund)?
+        };
 
-                balance
-            },
-            |value| value
-        )
+        let new_target_balance = {
+            let balance = self.spl_1155_balance(&transfer.target_token, &transfer.token_id, backend);
+            balance.checked_add(transfer.value).ok_or(ExitError::InvalidRange)?
+        };
+
+        let mut spl_balances = self.spl_1155_balances.borrow_mut();
+
+        let mut token_map = BTreeMap::new();
+
+        token_map.insert(transfer.source_token, new_source_balance);
+        token_map.insert(transfer.target_token, new_target_balance);
+
+        spl_balances.insert(transfer.token_id, token_map);
+
+        self.spl_transfers.push(transfer);
+
+        Ok(())
     }
 
     fn spl_transfer<B: AccountStorage>(&mut self, transfer: SplTransfer, backend: &B) -> Result<(), ExitError> {
@@ -1063,12 +1071,7 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
             return Ok(())
         }
 
-        if transfer.token_id != 0 {
-            self.substate.transfer_1155(transfer, self.backend)
-
-        } else {
-            self.substate.transfer(transfer, self.backend)
-        }
+        self.substate.transfer(transfer, self.backend)
     }
 
     pub fn reset_balance(&mut self, address: H160) {
@@ -1120,9 +1123,10 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         // event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
         let topics = vec![
             H256::from_str("c3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62").unwrap(),
-            // H256::from(0),
+            H256::from(0),
+             // TODO: Why Hash?
             H256::from(from),
-            H256::from(to)
+            H256::to(to)
             H256::from(id)
             H256::from(amount)
         ];
@@ -1150,8 +1154,13 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
     }
 
     #[must_use]
-    fn erc1155_transfer_impl(&mut self, mint: Pubkey, contract: H160, source: H160, target: H160, value: U256) -> bool
+    fn erc1155_transfer_impl(&mut self, mint: Pubkey, contract: H160, source: H160, target: H160, value: U256, token_id: U256) -> bool
     {
+        if token_id > U256::from(u64::MAX) {
+            return false;
+        }
+        let token_id = toke_id.as_u64();
+
         if value > U256::from(u64::MAX) {
             return false;
         }
@@ -1160,12 +1169,12 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         let (source_token, _) = self.backend.get_erc20_token_address(&source, &contract, &mint);
         let (target_token, _) = self.backend.get_erc20_token_address(&target, &contract, &mint);
 
-        let transfer = SplTransfer { source, target, contract, mint, source_token, target_token, value };
-        if self.substate.spl_transfer(transfer, self.backend).is_err() {
+        let transfer = SplTransfer { source, target, contract, mint, source_token, target_token, value, token_id };
+        if self.substate.spl_1155_transfer(transfer, self.backend).is_err() {
             return false;
         }
 
-        self.erc20_emit_transfer_event(contract, source, target, value);
+        self.erc1155_emit_transfer_event( contract, source, target, token_id, value );
 
         true
     }
@@ -1181,7 +1190,7 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         let (source_token, _) = self.backend.get_erc20_token_address(&source, &contract, &mint);
         let (target_token, _) = self.backend.get_erc20_token_address(&target, &contract, &mint);
 
-        let transfer = SplTransfer { source, target, contract, mint, source_token, target_token, value };
+        let transfer = SplTransfer { source, target, contract, mint, source_token, target_token, value, token_id };
         if self.substate.spl_transfer(transfer, self.backend).is_err() {
             return false;
         }
@@ -1192,9 +1201,9 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
     }
 
     #[must_use]
-    pub fn erc1155_transfer(&mut self, mint: Pubkey, context: &evm::Context, target: H160, value: U256) -> bool
+    pub fn erc1155_transfer(&mut self, mint: Pubkey, context: &evm::Context, target: H160, value: U256, token_id: U256) -> bool
     {
-        self.erc1155_transfer_impl(mint, context.address, context.caller, target, value)
+        self.erc1155_transfer_impl(mint, context.address, context.caller, target, value, token_id)
     }
 
     #[must_use]
