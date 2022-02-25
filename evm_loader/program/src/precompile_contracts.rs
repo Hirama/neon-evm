@@ -296,7 +296,7 @@ pub fn erc20_wrapper<'a, B: AccountStorage>(
 
 const ERC1155_METHOD_BALANCE_OF_ID: &[u8; 4] = &[0xd3, 0x30, 0xb5, 0x78];
 const ERC1155_METHOD_SAFE_TRANSFER_FROM_ID: &[u8; 4] = &[0xa2, 0x07, 0x71, 0x42];
-const ERC1155_METHOD_APPROVE_SOLANA_ID: &[u8; 4] = &[0x93, 0xe2, 0x93, 0x46];
+// const ERC1155_METHOD_APPROVE_SOLANA_ID: &[u8; 4] = &[0x93, 0xe2, 0x93, 0x46];
 
 /// Call inner `erc1155_wrapper`
 #[must_use]

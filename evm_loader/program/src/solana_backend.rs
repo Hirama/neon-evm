@@ -85,7 +85,8 @@ pub trait AccountStorage {
     }
 
     /// Get SPL token balance
-    fn get_spl_1155_token_balance(&self, token_account: &Pubkey, id: &u64) -> u64 {
+    fn get_spl_1155_token_balance(&self, token_account: &Pubkey, _id: &u64) -> u64 {
+        // TODO: map toke id
         self.apply_to_solana_account(
             token_account,
             || 0_u64,
@@ -118,7 +119,7 @@ pub trait AccountStorage {
     }
 
     /// Get ERC1155 token account address and bump seed
-    fn get_erc1155_token_address(&self, owner: &H160, id: &U256, contract: &H160, mint: &Pubkey) -> (Pubkey, u8) {
+    fn get_erc1155_token_address(&self, owner: &H160, _id: &U256, contract: &H160, mint: &Pubkey) -> (Pubkey, u8) {
         let seeds: &[&[u8]] = &[&[ACCOUNT_SEED_VERSION], b"ERC1155Balance", &mint.to_bytes(), contract.as_bytes(), owner.as_bytes()];
         Pubkey::find_program_address(seeds, self.program_id())
     }

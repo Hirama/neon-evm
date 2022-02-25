@@ -175,7 +175,7 @@ impl ExecutorSubstate {
     #[allow(clippy::missing_const_for_fn)]
     #[must_use]
     pub fn new<B: AccountStorage>(backend: &B) -> Self {
-        let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
+        let map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
         Self {
             metadata: ExecutorMetadata::new(backend),
             parent: None,
@@ -278,7 +278,7 @@ impl ExecutorSubstate {
 
     /// Creates new instance of `ExecutorSubstate` when entering next execution of a call or create.
     pub fn enter(&mut self, is_static: bool) {
-        let mut map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
+        let map_spl_balance:BTreeMap<u64, BTreeMap<Pubkey, u64>> = BTreeMap::new();
         let mut entering = Self {
             metadata: self.metadata.spit_child(is_static),
             parent: None,
@@ -644,10 +644,10 @@ impl ExecutorSubstate {
         let spl_balances = self.spl_1155_balances.borrow();
 
         // TODO:  ^^^ method not found in `std::option::Option<&BTreeMap<Pubkey, u64>>`
-        let mut outer_map = spl_balances.get(id);
+        // let mut outer_map = spl_balances.get(id);
 
-        match outer_map.get(address) {
-            Some(balance) => Some(*balance),
+        match spl_balances.get(id) {
+            Some(balance) => Some(*balance.get(address).unwrap()),
             None => self.parent.as_ref().and_then(|parent| parent.known_1155_spl_balance(address, id))
         }
     }
@@ -1112,7 +1112,8 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
             return false;
         }
 
-        self.erc1155_emit_transfer_event( contract, source, target, token_id, value );
+        // TODO: fix emit of event
+        // self.erc1155_emit_transfer_event( contract, source, target, token_id, value );
 
         true
     }
