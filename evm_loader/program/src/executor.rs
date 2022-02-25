@@ -11,7 +11,6 @@ use evm::{
     H160, H256, Handler, Resolve, Valids, U256,
 };
 use evm_runtime::{CONFIG, Control, save_created_address, save_return_value};
-use num_traits::Zero;
 use solana_program::entrypoint::ProgramResult;
 use solana_program::program_error::ProgramError;
 
@@ -167,7 +166,7 @@ impl<'a, B: AccountStorage> Handler for Executor<'a, B> {
         if is_precompile_address(&address) {
             return true;
         }
-        
+
         if CONFIG.empty_considered_exists {
             self.state.exists(address)
         } else {
@@ -452,7 +451,7 @@ impl<'a, B: AccountStorage> Machine<'a, B> {
         });
 
         debug_print!("create_begin");
-  
+
         let scheme = evm::CreateScheme::Legacy { caller };
 
         match self.executor.create(caller, scheme, transfer_value, code, None) {
@@ -601,7 +600,7 @@ impl<'a, B: AccountStorage> Machine<'a, B> {
         if reason.is_succeed() {
             self.executor.state.exit_commit().map_err(|e| (Vec::new(), ExitReason::from(e)))?;
         }
-        
+
         let return_value = exited_runtime.machine().return_value();
         if self.runtime.is_empty() {
             return Err((return_value, reason));

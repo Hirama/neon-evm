@@ -119,7 +119,7 @@ pub trait AccountStorage {
 
     /// Get ERC1155 token account address and bump seed
     fn get_erc1155_token_address(&self, owner: &H160, id: &U256, contract: &H160, mint: &Pubkey) -> (Pubkey, u8) {
-        let seeds: &[&[u8]] = &[&[ACCOUNT_SEED_VERSION], b"ERC1155Balance", &mint.to_bytes(), contract.as_bytes(), owner.as_bytes(), id.as_bytes()];
+        let seeds: &[&[u8]] = &[&[ACCOUNT_SEED_VERSION], b"ERC1155Balance", &mint.to_bytes(), contract.as_bytes(), owner.as_bytes()];
         Pubkey::find_program_address(seeds, self.program_id())
     }
 
