@@ -585,6 +585,36 @@ impl ExecutorSubstate {
     }
 
     #[must_use]
+    pub fn known_balance_1155(&self, address: &H160, id: &U256) -> Option<U256> {
+        let token = self.balances_1155.borrow();
+
+        let balance = token.get(id);
+
+        match balance.get(address) {
+            Some(balance) => Some(*balance),
+            None => self.parent.as_ref().and_then(|parent| parent.known_balance_1155(address, id))
+        }
+    }
+
+    #[must_use]
+    pub fn balance_1155<B: AccountStorage>(&self, address: &H160, id: &U256, backend: &B) -> U256 {
+        let value = self.known_balance_1155(&address, id);
+
+        value.map_or_else(
+            || {
+                // TODO: keep relation?
+                let balance = backend.balance(address);
+                let mut token_map = BTreeMap::new();
+                token_map.insert(*address, balance);
+                self.balances_1155.borrow_mut().insert(*id, token_map);
+
+                balance
+            },
+            |value| value
+        )
+    }
+
+    #[must_use]
     pub fn balance<B: AccountStorage>(&self, address: &H160, backend: &B) -> U256 {
         let value = self.known_balance(address);
 
@@ -620,6 +650,37 @@ impl ExecutorSubstate {
         let mut balances = self.balances.borrow_mut();
         balances.insert(transfer.source, new_source_balance);
         balances.insert(transfer.target, new_target_balance);
+
+        self.transfers.push(*transfer);
+
+        Ok(())
+    }
+
+    /// Adds a transfer_1155 to execute.
+    /// # Errors
+    /// May return `OutOfFund` if the source has no funds.
+    pub fn transfer_1155<B: AccountStorage>(
+        &mut self,
+        transfer: &Transfer,
+        backend: &B,
+    ) -> Result<(), ExitError> {
+        let new_source_balance = {
+            let balance = self.balance_1155(&transfer.source, &transfer.token_id, backend);
+            balance.checked_sub(transfer.value).ok_or(ExitError::OutOfFund)?
+        };
+
+        let new_target_balance = {
+            let balance = self.balance_1155(&transfer.target, &transfer.token_id, backend);
+            balance.checked_add(transfer.value).ok_or(ExitError::InvalidRange)?
+        };
+
+        let mut balances = self.balances_1155.borrow_mut();
+        let mut token_map = BTreeMap::new();
+        token_map.insert(transfer.source, new_source_balance);
+        token_map.insert(transfer.target, new_target_balance);
+
+
+        balances.insert(transfer.token_id,token_map);
 
         self.transfers.push(*transfer);
 
@@ -1002,7 +1063,12 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
             return Ok(())
         }
 
-        self.substate.transfer(transfer, self.backend)
+        if transfer.token_id != 0 {
+            self.substate.transfer_1155(transfer, self.backend)
+
+        } else {
+            self.substate.transfer(transfer, self.backend)
+        }
     }
 
     pub fn reset_balance(&mut self, address: H160) {
@@ -1050,10 +1116,21 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
     }
 
     #[must_use]
-    pub fn erc1155_transfer(&self, mint: Pubkey, context: &evm::Context, from: H160, to: H160, id: U256, amount: U256) {
-        // TODO: do
-        // event Transfer ...
+    pub fn erc1155_emit_transfer_event(&mut self, contract: H160, from: H160, to: H160, id: u64, amount: u64) {
+        // event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+        let topics = vec![
+            H256::from_str("c3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62").unwrap(),
+            // H256::from(0),
+            H256::from(from),
+            H256::from(to)
+            H256::from(id)
+            H256::from(amount)
+        ];
 
+        let mut data = vec![0_u8; 32];
+        U256::from(value).into_big_endian_fast(&mut data);
+
+        self.log(contract, topics, data);
         
     }
 
@@ -1070,6 +1147,27 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         U256::from(value).into_big_endian_fast(&mut data);
 
         self.log(contract, topics, data);
+    }
+
+    #[must_use]
+    fn erc1155_transfer_impl(&mut self, mint: Pubkey, contract: H160, source: H160, target: H160, value: U256) -> bool
+    {
+        if value > U256::from(u64::MAX) {
+            return false;
+        }
+        let value = value.as_u64();
+
+        let (source_token, _) = self.backend.get_erc20_token_address(&source, &contract, &mint);
+        let (target_token, _) = self.backend.get_erc20_token_address(&target, &contract, &mint);
+
+        let transfer = SplTransfer { source, target, contract, mint, source_token, target_token, value };
+        if self.substate.spl_transfer(transfer, self.backend).is_err() {
+            return false;
+        }
+
+        self.erc20_emit_transfer_event(contract, source, target, value);
+
+        true
     }
 
     #[must_use]
@@ -1091,6 +1189,12 @@ impl<'a, B: AccountStorage> ExecutorState<'a, B> {
         self.erc20_emit_transfer_event(contract, source, target, value);
 
         true
+    }
+
+    #[must_use]
+    pub fn erc1155_transfer(&mut self, mint: Pubkey, context: &evm::Context, target: H160, value: U256) -> bool
+    {
+        self.erc1155_transfer_impl(mint, context.address, context.caller, target, value)
     }
 
     #[must_use]

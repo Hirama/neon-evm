@@ -11,6 +11,7 @@ use evm::{
     H160, H256, Handler, Resolve, Valids, U256,
 };
 use evm_runtime::{CONFIG, Control, save_created_address, save_return_value};
+use num_traits::Zero;
 use solana_program::entrypoint::ProgramResult;
 use solana_program::program_error::ProgramError;
 
@@ -413,7 +414,7 @@ impl<'a, B: AccountStorage> Machine<'a, B> {
         self.executor.state.touch(code_address);
 
         let transfer_value = token::eth::round(transfer_value);
-        let transfer = evm::Transfer { source: caller, target: code_address, value: transfer_value };
+        let transfer = evm::Transfer { token_id: U256::zero(), source: caller, target: code_address, value: transfer_value };
         self.executor.state.transfer(&transfer)
             .map_err(emit_exit)
             .map_err(|e| E!(ProgramError::InsufficientFunds; "ExitError={:?}", e))?;

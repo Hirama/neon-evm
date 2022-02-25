@@ -4,23 +4,10 @@ pragma solidity >=0.5.12;
 
 
 interface IERC1155 {
-//balanceOf(account, id)
-//
-//balanceOfBatch(accounts, ids)
-//
-//setApprovalForAll(operator, approved)
-//
-//isApprovedForAll(account, operator)
-//
-//safeTransferFrom(from, to, id, amount, data)
+    function balanceOf(address account, uint256 id) external view returns (uint256);
+    function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external;
 
-//safeBatchTransferFrom(from, to, ids, amounts, data)
-
-    function balanceOf(address who, uint256 id) external view returns (uint256);
-    function safeTransferFrom(address from, address to, uint256 value, bytes data) external returns (bool);
-
-    event TransferSingle(address operator, address from, address to, uint256 id, uint256 value);
-
+    event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
     
     function approveSolana(bytes32 spender, uint64 value) external returns (bool);
 
